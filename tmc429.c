@@ -1,6 +1,7 @@
 #include <linux/spi/spidev.h>
 #include <linux/types.h>
 
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -14,16 +15,8 @@
 
 #include "tmc429.h" //Header file containing the register names of the TMC429
 
-// Some sample values for acceleration and velocity
-#define MOT0_AMAX 500
-#define MOT0_VMAX 1200
-
-#define MOT1_AMAX 50
-#define MOT1_VMAX 2047
-
-#define MOT2_VMAX 2047
-
-/* The following array contains:
+/**
+ * The following array contains:
  * - the first 64 bytes: configuration data of the TMC429 containing
  *  the structure of the SPI telegrams that are to be sent to the
  *  drivers by the TMC429 (in this example: three TMC236).
@@ -47,88 +40,109 @@ uint8_t driver_table[128] = {
 // File for SPI communication.
 int fd;
 
-/*
- * Function: uint8_t read_write_spi(uint8_t writebyte)
- * Purpose: Write one byte to the SPI interface
- * and read back one byte.
- * Parameter: writebyte: byte to be written.
- * Return value: byte that has been read back.
+/**
+ * Formats data for sending to the TMC429;
+ *
+ * rrs  - 1 bit.
+ * smda - 2 bits.
+ * idx  - 4 bits.
+ * rw   - 1 bit.
+ * data - 24 bits.
  */
-uint8_t read_write_spi(uint8_t writebyte) {
-  struct spi_ioc_transfer xfer;
-  unsigned long rx_buf;
+uint32_t format_data(uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
+                     uint32_t data) {
+  return (uint32_t)(((0x1 & rrs) << 31) | ((0x3 & smda) << 29) |
+                    ((0xF & idx) << 25) | ((0x1 & rw) << 24) |
+                    (0xFFFFFF & data));
+}
+
+/**
+ * Writes a 32-bit word to the TMC429 and receives a word back.
+ */
+uint32_t rw_spi(uint32_t data) {
+  struct spi_ioc_transfer xfer[2];
+  uint8_t buf[32], *bp;
   int status;
+  uint32_t ret;
 
-  // This function is controller specific and has to to
-  // the following things:
+  memset(xfer, 0, sizeof(xfer));
+  memset(buf, 0, sizeof(buf));
 
-  // Send the contents of "writebyte" to the TCM429 via the SPI interface
-  xfer.tx_buf = writebyte;
-  xfer.rx_buf = rx_buf;
-  xfer.len = 1;
+  // Move data into buffer.
+  memcpy(buf, &data, 4);
 
-  // (MSB first!!!!!!!!!!!).
-  ioctl(fd, SPI_IOC_MESSAGE(1), xfer);
+  xfer[0].tx_buf = (unsigned long)buf;
+  xfer[0].len = 4;
+
+  xfer[1].rx_buf = (unsigned long)buf;
+  xfer[1].len = 1;
+
+  status = ioctl(fd, SPI_IOC_MESSAGE(2), xfer);
   if (status < 0) {
     perror("Could not write byte IOC_MESSAGE\n");
-    printf("Could not write byte IOC_MESSAGE\n");
+    return NULL;
   }
 
-  // Return the byte that has been written back from the TMC429.
-  return rx_buf;
+  // Get the data back out of the buffer (This can probably be optimized).
+  memcpy(&ret, buf, 4);
+  return ret;
 }
 
-/*
- * Function:  Send429
- * Purpose: Send four Bytes to the TMC429
- * Parameter:    a,b,c,d: the bytes that are to be written
+/**
+ * Write the ram tab into the TMC429.
  */
-void Send429(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
-  read_write_spi(a);
-  read_write_spi(b);
-  read_write_spi(c);
-  read_write_spi(d);
+void write_config(uint8_t *ram_tab) {
+  for (int i = 0; i < (128 - 2);
+       i +=
+       2) // initialize TMC428 RAM table (SPI conf. & quarter sine wave LUT)
+  {
+    rw_spi((long int)(0x80000000 | (i << (25 - 1)) | (ram_tab[i + 1] << 8) |
+                      (ram_tab[i]))); // RRS = 1, RW = 1
+  }
 }
 
-/*
- * Function:  Send429
- * Purpose: Initialize the TMC429
- * Return value: 0 for success, 1 for failure.
+/**
+ * Read the config and write it into the ram tab.
  */
-int Init429(void) {
+void read_config(uint8_t *ram_tab) {
+  uint8_t i;
+  uint32_t spi;
+
+  for (i = 0; i < 127; i += 2) {
+    spi = rw_spi((uint32_t)(0x81000000 | (i << (25 - 1)))); // RRS=1, RW=1
+
+    ram_tab[i + 1] = (uint8_t)(0x3f & (spi >> 8));
+    ram_tab[i] = (uint8_t)(0x3f & (spi >> 0));
+  }
+}
+
+/**
+ * Initialize the TMC429.
+ */
+int init() {
   int i;
-
   fd = open(SPI_DEVICE, O_RDWR);
-
   if (fd < 0) {
     perror("Could not open SPI file.");
-    return 1;
+    return -1;
   }
 
   // Write the driver configuration data to the TMC429.
-  // This is the most important part of the intialization and should be done
-  // first of all!
-  for (i = 128; i < 256; i += 2) {
-    Send429(i, 0, driver_table[i - 127], driver_table[i - 128]);
-  }
+  write_config(driver_table);
 
-  // Set the "Stepper Motor Global Parameter"-Registers (SMGP).
-  // Set SPI_CONTINUOS_UPDATE  and PoFD, SPI_CLKDIV=7
-  //       LSMD = 2 (which means 3 motors!)
-  Send429(IDX_SMGP, 0x01, 0x07, 0x22);
+  // Stepper Motor Global Parameter.
+  // Set SPI_CONTINUOS_UPDATE=1, PoFD=1, SPI_CLKDIV=7, LSMD=0 (1 motor)
+  // Send429(IDX_SMGP, 0x01, 0x07, 0x22);
+  rw_spi(format_data(0, SMDA_OTHER, ADDR_SMGP, 0, 0x010720));
 
   // Set the coil current parameters (which is application specific)
-  Send429(IDX_AGTAT_ALEAT | MOTOR0, 0x00, 0x10,
-          0x40); // i_s_agtat/i_s_aleat/i_s_v0/a_threshold
-  Send429(IDX_AGTAT_ALEAT | MOTOR1, 0x00, 0x10, 0x40);
-  Send429(IDX_AGTAT_ALEAT | MOTOR2, 0x00, 0x10, 0x40);
+  // i_s_agtat/i_s_aleat/i_s_v0/a_threshold
+  rw_spi(format_data(0, SMDA_MOTOR0, ADDR_THRESHOLD, 0, 0x001040));
 
   // Set the pre-dividers and the microstep resolution (which is also
   // application and motor specific)
-  Send429(IDX_PULSEDIV_RAMPDIV | MOTOR0, 0x00, 0x55,
-          0x04); // pulsdiv/rampdiv/µStep
-  Send429(IDX_PULSEDIV_RAMPDIV | MOTOR1, 0x00, 0x55, 0x04);
-  Send429(IDX_PULSEDIV_RAMPDIV | MOTOR2, 0x00, 0x55, 0x04);
+  // pulsdiv/rampdiv/µStep
+  rw_spi(format_data(0, SMDA_MOTOR0, ADDR_PULSEDIV_RAMPDIV, 0, 0x005504));
 
   // Now some examples of the driving parameters. This is highly application
   // specific!
@@ -149,18 +163,15 @@ int Init429(void) {
   // algorithm given in the data sheet. The values given here have been
   // calculated using the Calc429.exe program on the TechLibCD.
 
-  // Example for motor #1: VELOCITY mode
-  Send429(IDX_VMIN | MOTOR1, 0, 0, 1); // Vmin = 1
-  Send429(IDX_VMAX | MOTOR1, 0, MOT1_VMAX >> 8,
-          MOT1_VMAX & 0xff); // VMax = MOT1_VMAX (s. oben)
-  Send429(IDX_AMAX | MOTOR1, 0, MOT1_AMAX >> 8,
-          MOT1_AMAX & 0xff); // AMax = MOT1_AMAX
-  Send429(IDX_REFCONF_RM | MOTOR1, 0, NO_REF,
-          RM_VELOCITY); // VELOCITY mode, no stop switches
+  // Initialize motor 0 in velocity mode.
+  rw_spi(format_data(0, SMDA_MOTOR0, ADDR_VMIN, 0, 1));        // Vmin = 1
+  rw_spi(format_data(0, SMDA_MOTOR0, ADDR_VMAX, 0, 0x0007FF)); // Vmax = 2047
+  rw_spi(format_data(0, SMDA_MOTOR0, ADDR_AMAX, 0, 0x0007FF)); // Amax = 2047
+  rw_spi(format_data(0, SMDA_MOTOR0, ADDR_REFCONF_RM, 0,
+                     0x000F02)); // NO_REF = 0x0f, RM_VELOCITY = 0x02
 
-  // Motor #1 can now be driven by setting the VTarget register (IDX_VTARGET) to
-  // the desired velocity. The AMax value will be used to accelerate or
-  // decelerate the motor.
+  // Start the motor moving.
+  rw_spi(format_data(0, SMDA_MOTOR0, ADDR_VTARGET, 0, 0x0008F)); // Amax = 2047
 
   // Example for motor #2: HOLD mode
   // Send429(IDX_VMIN | MOTOR2, 0, 0, 1); // Vmin = 1
@@ -174,12 +185,4 @@ int Init429(void) {
   return 0;
 }
 
-int main() {
-  Init429();
-
-  // Trying to set the target velocity.
-  Send429(IDX_VTARGET | MOTOR1, 0, 0, 4);
-
-  while (1) {
-  }
-}
+int main() { init(); }

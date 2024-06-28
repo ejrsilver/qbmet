@@ -1,32 +1,43 @@
-// All the motor addresses are shifted by five to account for IDX and RW bits.
-#define MOTOR0 0
-#define MOTOR1 0x20
-#define MOTOR2 0x40
+// SMDA.
+#define SMDA_MOTOR0 0x0
+#define SMDA_MOTOR1 0x1
+#define SMDA_MOTOR2 0x2
+#define SMDA_OTHER 0x3
 
-// All the addresses are shifted by one so that the RW bit is always 0 (allow write).
-#define IDX_XTARGET 0x00
-#define IDX_XACTUAL 0x02
-#define IDX_VMIN 0x04
-#define IDX_VMAX 0x06
-#define IDX_VTARGET 0x08
-#define IDX_VACTUAL 0x0A
-#define IDX_AMAX 0x0C
-#define IDX_AACTUAL 0x0E
-#define IDX_AGTAT_ALEAT 0x10
-#define IDX_PMUL_PDIV 0x12
-#define IDX_REFCONF_RM 0x14
-#define IDX_IMASK_IFLAGS 0x16
-#define IDX_PULSEDIV_RAMPDIV 0x18
-#define IDX_DX_REFTOLERANCE 0x1A
-#define IDX_XLATCHED 0x1C
+// Three stepper motor register set adresses.
+#define ADDR_XTARGET 0x0
+#define ADDR_XACTUAL 0x1
+#define ADDR_VMIN 0x2
+#define ADDR_VMAX 0x3
+#define ADDR_VTARGET 0x4
+#define ADDR_VACTUAL 0x5
+#define ADDR_AMAX 0x6
+#define ADDR_AACTUAL 0x7
+#define ADDR_THRESHOLD 0x8
+#define ADDR_PMUL_PDIV 0x9
+#define ADDR_REFCONF_RM 0xA
+#define ADDR_INTERRUPT 0xB
+#define ADDR_PULSEDIV_RAMPDIV 0xC
+#define ADDR_DX_REFTOLERANCE 0xD
+#define ADDR_XLATCHED 0xE
+#define ADDR_USTEPCOUNT 0xF
 
-#define IDX_SMGP 0x7e
+// Common register addresses.
+#define ADDR_DATAGRAM_LOW 0x0
+#define ADDR_DATAGRAM_HIGH 0x1
+#define ADDR_COVER_POSITION_LEN 0x2
+#define ADDR_COVER_DATAGRAM 0x3
+#define ADDR_IF_CONFIGURATION 0x4
+#define ADDR_POS_COMP 0x5
+#define ADDR_POS_COMP_INT 0x6
+#define ADDR_POWER_DOWN 0x8
+#define ADDR_TYPE_VERSION 0x9
+#define ADDR_LEFT_RIGHT 0xE
+#define ADDR_SMGP 0xF
 
-#define READ_REG 0x01
-
-#define RM_RAMP 0
-#define RM_SOFT 1
-#define RM_VELOCITY 2
-#define RM_HOLD 3
-
+// Other.
+#define RM_RAMP 0x0
+#define RM_SOFT 0x1
+#define RM_VELOCITY 0x2
+#define RM_HOLD 0x3
 #define NO_REF 0x0f
