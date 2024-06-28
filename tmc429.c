@@ -12,6 +12,9 @@
 #include <stdlib.h>
 
 #define SPI_DEVICE "/dev/spidev0.0"
+#define SPI_SPEED 5000000
+#define SPI_DELAY 0
+#define SPI_BITS_PER_WORD 32
 
 #include "tmc429.h" //Header file containing the register names of the TMC429
 
@@ -38,7 +41,7 @@ const uint16_t driver_table[64] = {
 int fd;
 
 /**
- * Formats data for sending to the TMC429;
+ * Writes a 32-bit word to the TMC429 and receives a word back.
  *
  * rrs  - 1 bit.
  * smda - 2 bits.
@@ -46,46 +49,33 @@ int fd;
  * rw   - 1 bit.
  * data - 24 bits.
  */
-uint32_t format_data(uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
-                     uint32_t data) {
-  return (uint32_t)(((0x1 & rrs) << 31) | ((0x3 & smda) << 29) |
-                    ((0xF & idx) << 25) | ((0x1 & rw) << 24) |
-                    (0xFFFFFF & data));
-}
-
-/**
- * Writes a 32-bit word to the TMC429 and receives a word back.
- */
 int32_t rw_spi(uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
                uint32_t data) {
-  struct spi_ioc_transfer xfer[2];
-  uint8_t buf[32], *bp;
+  struct spi_ioc_transfer xfer;
+  uint32_t data_in, data_out, *buf_tx, *buf_rx;
   int32_t status;
-  int32_t ret, in_data;
 
-  in_data = format_data(rrs, smda, idx, rw, data);
-
-  memset(xfer, 0, sizeof(xfer));
-  memset(buf, 0, sizeof(buf));
+  memset(&xfer, 0, sizeof(xfer));
 
   // Move data into buffer.
-  memcpy(buf, &in_data, 4);
+  data_in = ((0x1 & rrs) << 31) | ((0x3 & smda) << 29) | ((0xF & idx) << 25) |
+            ((0x1 & rw) << 24);
 
-  xfer[0].tx_buf = (unsigned long)buf;
-  xfer[0].len = 4;
+  xfer.tx_buf = (unsigned long)&data_in;
+  xfer.rx_buf = (unsigned long)&data_out;
+  xfer.len = 4;
+  xfer.delay_usecs = SPI_DELAY;
+  xfer.speed_hz = SPI_SPEED;
+  xfer.bits_per_word = SPI_BITS_PER_WORD;
 
-  xfer[1].rx_buf = (unsigned long)buf;
-  xfer[1].len = 1;
-
-  status = ioctl(fd, SPI_IOC_MESSAGE(2), xfer);
+  status = ioctl(fd, SPI_IOC_MESSAGE(1), &xfer);
   if (status < 0) {
     perror("Could not write byte IOC_MESSAGE\n");
     exit(EXIT_FAILURE);
   }
 
   // Get the data back out of the buffer (This can probably be optimized).
-  memcpy(&ret, buf, 4);
-  return ret;
+  return data_out;
 }
 
 /**
@@ -147,8 +137,10 @@ void init() {
          0x000F02); // NO_REF = 0x0f, RM_VELOCITY = 0x02
 
   // Start the motor moving.
-  data = rw_spi(0, SMDA_MOTOR0, ADDR_VTARGET, 0, 0x0008F); // Amax = 2047
-  printf("%d\n", data);
+  rw_spi(0, SMDA_MOTOR0, ADDR_VTARGET, 0, 0x00008F); // Set the target velocity.
+  data = rw_spi(0, SMDA_MOTOR0, ADDR_VTARGET, 1,
+                0x00008F); // Check that the target velocity was set.
+  printf("input: %x, output: %x\n", 0x1000008F, data);
 }
 
 int main() { init(); }
