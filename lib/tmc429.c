@@ -10,11 +10,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#define SELECT_429()   // FILL IN HERE: Set the  nCS line of the TMC429 to low.
+#define DESELECT_429() // FILL IN HERE: Set the  nCS line of the TMC429 to high.
 #define SPI_DEVICE "/dev/spidev0.0"
-#define SPI_SPEED 5000000
-#define SPI_DELAY 0
-#define SPI_BITS_PER_WORD 32
+
+#define SPI_SPEED 5000
+#define SPI_DELAY 5
+#define SPI_BITS_PER_WORD 8
 
 #include "tmc429.h" //Header file containing the register names of the TMC429
 
@@ -27,15 +29,18 @@
  * - the second 64 bytes: microstep wave table
  *   (sine wave, 1/4 period).
  */
-const uint16_t driver_table[64] = {
-    0x1005, 0x0403, 0x0206, 0x100D, 0x0C0B, 0x0A2E, 0x1005, 0x0403,
-    0x0206, 0x100D, 0x0C0B, 0x0A2E, 0x1005, 0x0403, 0x0206, 0x100D,
-    0x0C0B, 0x0A2E, 0x1111, 0x1111, 0x1111, 0x1111, 0x1111, 0x1111,
-    0x1111, 0x1111, 0x1111, 0x1111, 0x1111, 0x1111, 0x1111, 0x1111,
-    0x0002, 0x0305, 0x0608, 0x090B, 0x0C0E, 0x1011, 0x1314, 0x1617,
-    0x181A, 0x1B1D, 0x1E20, 0x2122, 0x2425, 0x2627, 0x292A, 0x2B2C,
-    0x2D2E, 0x2F30, 0x3132, 0x3334, 0x3536, 0x3738, 0x3839, 0x3A3B,
-    0x3B3C, 0x3C3D, 0x3D3E, 0x3E3E, 0x3F3F, 0x3F3F, 0x3F3F, 0x3F3F};
+uint8_t driver_table[128] = {
+    0x10, 0x05, 0x04, 0x03, 0x02, 0x06, 0x10, 0x0D, 0x0C, 0x0B, 0x0A, 0x2E,
+    0x10, 0x05, 0x04, 0x03, 0x02, 0x06, 0x10, 0x0D, 0x0C, 0x0B, 0x0A, 0x2E,
+    0x10, 0x05, 0x04, 0x03, 0x02, 0x06, 0x10, 0x0D, 0x0C, 0x0B, 0x0A, 0x2E,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+    0x11, 0x11, 0x11, 0x11, 0x00, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09, 0x0B,
+    0x0C, 0x0E, 0x10, 0x11, 0x13, 0x14, 0x16, 0x17, 0x18, 0x1A, 0x1B, 0x1D,
+    0x1E, 0x20, 0x21, 0x22, 0x24, 0x25, 0x26, 0x27, 0x29, 0x2A, 0x2B, 0x2C,
+    0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+    0x38, 0x39, 0x3A, 0x3B, 0x3B, 0x3C, 0x3C, 0x3D, 0x3D, 0x3E, 0x3E, 0x3E,
+    0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F};
 
 // File for SPI communication.
 int fd;
@@ -52,27 +57,51 @@ int fd;
 int32_t rw_spi(uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
                uint32_t data) {
   struct spi_ioc_transfer xfer;
-  uint32_t data_in, data_out, *buf_tx, *buf_rx;
+  uint32_t data_in, data_out;
+  uint8_t buf_tx[32], buf_rx[32];
   int32_t status;
 
   memset(&xfer, 0, sizeof(xfer));
 
-  // Move data into buffer.
   data_in = ((0x1 & rrs) << 31) | ((0x3 & smda) << 29) | ((0xF & idx) << 25) |
-            ((0x1 & rw) << 24);
+            ((0x1 & rw) << 24) | data & 0xFFFFFF;
 
-  xfer.tx_buf = (unsigned long)&data_in;
-  xfer.rx_buf = (unsigned long)&data_out;
+  buf_tx[0] = data_in >> 24;
+  buf_tx[1] = (data_in >> 16) & 0xFF;
+  buf_tx[2] = (data_in >> 8) & 0xFF;
+  buf_tx[3] = data_in & 0xFF;
+
+  xfer.tx_buf = (unsigned long)buf_tx;
+  xfer.rx_buf = (unsigned long)buf_rx;
   xfer.len = 4;
   xfer.delay_usecs = SPI_DELAY;
   xfer.speed_hz = SPI_SPEED;
   xfer.bits_per_word = SPI_BITS_PER_WORD;
 
-  status = ioctl(fd, SPI_IOC_MESSAGE(1), &xfer);
+  printf("original: %x, in_arr: 0x", data_in);
+
+  for (int i = 0; i < 4; i++) {
+    printf("%x", buf_tx[i]);
+  }
+
+  printf("\n");
+
+  status = ioctl(fd, SPI_IOC_MESSAGE(1), xfer);
   if (status < 0) {
     perror("Could not write byte IOC_MESSAGE\n");
     exit(EXIT_FAILURE);
   }
+
+  data_out = (((uint32_t)buf_rx[0]) << 24) | (((uint32_t)buf_rx[1]) << 16) |
+             (((uint32_t)buf_rx[2]) << 8) | (((uint32_t)buf_rx[3]));
+
+  printf("output: %x, out_arr: 0x", data_out);
+
+  for (int i = 0; i < 4; i++) {
+    printf("%x", buf_rx[i]);
+  }
+
+  printf("\n");
 
   // Get the data back out of the buffer (This can probably be optimized).
   return data_out;
@@ -83,10 +112,10 @@ int32_t rw_spi(uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
  *
  * Negative on failure, positive on success.
  */
-void write_config(const uint16_t *const ram_tab) {
-  int32_t status;
-  for (int i = 0; i < 63; i++) {
-    rw_spi(1, i >> 4, i & 0xFF, 0, ram_tab[i]);
+void write_config(const uint8_t *const ram_tab) {
+  for (int i = 0; i < 126; i += 2) {
+    rw_spi(1, i >> 4, i & 0xFF, 0,
+           (((uint32_t)ram_tab[i]) << 8) | ram_tab[i + 1]);
   }
 }
 
@@ -96,8 +125,12 @@ void write_config(const uint16_t *const ram_tab) {
  * Negative on failure, positive on success.
  */
 void read_config(uint8_t *ram_tab) {
-  for (int i = 0; i < 63; i++) {
-    ram_tab[i] = rw_spi(1, i >> 4, i & 0xFF, 1, ram_tab[i]);
+  int32_t status;
+  for (int i = 0; i < 126; i += 2) {
+    status = rw_spi(1, i >> 4, i & 0xFF, 1,
+                    (((uint32_t)ram_tab[i]) << 8) | ram_tab[i + 1]);
+    ram_tab[i] = status >> 8 & 0xFF;
+    ram_tab[i + 1] = status >> 16 & 0xFF;
   }
 }
 
@@ -142,5 +175,3 @@ void init() {
                 0x00008F); // Check that the target velocity was set.
   printf("input: %x, output: %x\n", 0x1000008F, data);
 }
-
-int main() { init(); }
