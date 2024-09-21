@@ -42,9 +42,6 @@ uint8_t driver_table[128] = {
     0x38, 0x39, 0x3A, 0x3B, 0x3B, 0x3C, 0x3C, 0x3D, 0x3D, 0x3E, 0x3E, 0x3E,
     0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F};
 
-// File for SPI communication.
-int fd;
-
 /**
  * Writes a 32-bit word to the TMC429 and receives a word back.
  *
@@ -54,53 +51,52 @@ int fd;
  * rw   - 1 bit.
  * data - 24 bits.
  */
-int32_t rw_spi(uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
+int32_t rw_spi(int32_t fd, uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
                uint32_t data) {
-  struct spi_ioc_transfer xfer;
+  struct spi_ioc_transfer xfer[2];
   uint32_t data_in, data_out;
-  uint8_t buf_tx[32], buf_rx[32];
+  uint8_t buf[32], *bp;
   int32_t status;
 
-  memset(&xfer, 0, sizeof(xfer));
+  memset(xfer, 0, sizeof(xfer));
+  memset(buf, 0, sizeof(buf));
 
   data_in = ((0x1 & rrs) << 31) | ((0x3 & smda) << 29) | ((0xF & idx) << 25) |
             ((0x1 & rw) << 24) | data & 0xFFFFFF;
 
-  buf_tx[0] = data_in >> 24;
-  buf_tx[1] = (data_in >> 16) & 0xFF;
-  buf_tx[2] = (data_in >> 8) & 0xFF;
-  buf_tx[3] = data_in & 0xFF;
+  buf[0] = data_in >> 24;
+  buf[1] = (data_in >> 16) & 0xFF;
+  buf[2] = (data_in >> 8) & 0xFF;
+  buf[3] = data_in & 0xFF;
 
-  xfer.tx_buf = (unsigned long)buf_tx;
-  xfer.rx_buf = (unsigned long)buf_rx;
-  xfer.len = 4;
-  xfer.delay_usecs = SPI_DELAY;
-  xfer.speed_hz = SPI_SPEED;
-  xfer.bits_per_word = SPI_BITS_PER_WORD;
+  xfer[0].tx_buf = (unsigned long)buf;
+  xfer[0].len = 4;
+  xfer[0].delay_usecs = SPI_DELAY;
+  xfer[0].speed_hz = SPI_SPEED;
+  xfer[0].bits_per_word = SPI_BITS_PER_WORD;
 
-  printf("original: %x, in_arr: 0x", data_in);
+  xfer[1].rx_buf = (unsigned long)buf;
+  xfer[1].len = 4;
 
+  printf("input: ");
   for (int i = 0; i < 4; i++) {
-    printf("%x", buf_tx[i]);
+    printf("%02x", buf[i]);
   }
+  printf(", ");
 
-  printf("\n");
-
-  status = ioctl(fd, SPI_IOC_MESSAGE(1), xfer);
+  status = ioctl(fd, SPI_IOC_MESSAGE(2), xfer);
   if (status < 0) {
     perror("Could not write byte IOC_MESSAGE\n");
     exit(EXIT_FAILURE);
   }
 
-  data_out = (((uint32_t)buf_rx[0]) << 24) | (((uint32_t)buf_rx[1]) << 16) |
-             (((uint32_t)buf_rx[2]) << 8) | (((uint32_t)buf_rx[3]));
+  data_out = (((uint32_t)buf[0]) << 24) | (((uint32_t)buf[1]) << 16) |
+             (((uint32_t)buf[2]) << 8) | (((uint32_t)buf[3]));
 
-  printf("output: %x, out_arr: 0x", data_out);
-
+  printf("status: %2d, out: ", status);
   for (int i = 0; i < 4; i++) {
-    printf("%x", buf_rx[i]);
+    printf("%02x", buf[i]);
   }
-
   printf("\n");
 
   // Get the data back out of the buffer (This can probably be optimized).
@@ -112,9 +108,9 @@ int32_t rw_spi(uint8_t rrs, uint8_t smda, uint8_t idx, uint8_t rw,
  *
  * Negative on failure, positive on success.
  */
-void write_config(const uint8_t *const ram_tab) {
+void write_config(int32_t fd, const uint8_t *const ram_tab) {
   for (int i = 0; i < 126; i += 2) {
-    rw_spi(1, i >> 4, i & 0xFF, 0,
+    rw_spi(fd, 1, i >> 4, i & 0xFF, 0,
            (((uint32_t)ram_tab[i]) << 8) | ram_tab[i + 1]);
   }
 }
@@ -124,54 +120,12 @@ void write_config(const uint8_t *const ram_tab) {
  *
  * Negative on failure, positive on success.
  */
-void read_config(uint8_t *ram_tab) {
+void read_config(int32_t fd, uint8_t *ram_tab) {
   int32_t status;
   for (int i = 0; i < 126; i += 2) {
-    status = rw_spi(1, i >> 4, i & 0xFF, 1,
+    status = rw_spi(fd, 1, i >> 4, i & 0xFF, 1,
                     (((uint32_t)ram_tab[i]) << 8) | ram_tab[i + 1]);
     ram_tab[i] = status >> 8 & 0xFF;
     ram_tab[i + 1] = status >> 16 & 0xFF;
   }
-}
-
-/**
- * Initialize the TMC429.
- */
-void init() {
-  int32_t i, data;
-  fd = open(SPI_DEVICE, O_RDWR);
-  if (fd < 0) {
-    perror("Could not open SPI file.");
-    exit(EXIT_FAILURE);
-  }
-
-  // Write the driver configuration data to the TMC429.
-  write_config(driver_table);
-
-  // Stepper Motor Global Parameter.
-  // Set SPI_CONTINUOS_UPDATE=1, PoFD=1, SPI_CLKDIV=7, LSMD=0 (1 motor)
-  // Send429(IDX_SMGP, 0x01, 0x07, 0x22);
-  rw_spi(0, SMDA_OTHER, ADDR_SMGP, 0, 0x010720);
-
-  // Set the coil current parameters (which is application specific)
-  // i_s_agtat/i_s_aleat/i_s_v0/a_threshold
-  rw_spi(0, SMDA_MOTOR0, ADDR_THRESHOLD, 0, 0x001040);
-
-  // Set the pre-dividers and the microstep resolution (which is also
-  // application and motor specific)
-  // pulsdiv/rampdiv/µStep
-  rw_spi(0, SMDA_MOTOR0, ADDR_PULSEDIV_RAMPDIV, 0, 0x005504);
-
-  // Initialize motor 0 in velocity mode.
-  rw_spi(0, SMDA_MOTOR0, ADDR_VMIN, 0, 1);        // Vmin = 1
-  rw_spi(0, SMDA_MOTOR0, ADDR_VMAX, 0, 0x0007FF); // Vmax = 2047
-  rw_spi(0, SMDA_MOTOR0, ADDR_AMAX, 0, 0x0007FF); // Amax = 2047
-  rw_spi(0, SMDA_MOTOR0, ADDR_REFCONF_RM, 0,
-         0x000F02); // NO_REF = 0x0f, RM_VELOCITY = 0x02
-
-  // Start the motor moving.
-  rw_spi(0, SMDA_MOTOR0, ADDR_VTARGET, 0, 0x00008F); // Set the target velocity.
-  data = rw_spi(0, SMDA_MOTOR0, ADDR_VTARGET, 1,
-                0x00008F); // Check that the target velocity was set.
-  printf("input: %x, output: %x\n", 0x1000008F, data);
 }
